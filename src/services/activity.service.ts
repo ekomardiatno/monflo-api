@@ -1,5 +1,5 @@
 import { prisma } from "../config/prisma";
-import { CreateActivityInput, UpdateActivityInput } from "../schemas/activity.schema";
+import { CreateActivityInput, UpdateActivityInput, RestoreActivitiesInput } from "../schemas/activity.schema";
 
 export async function getActivities(userId: string, month?: number, year?: number) {
   const where: any = { userId };
@@ -57,4 +57,38 @@ export async function deleteActivity(id: number, userId: string) {
 
   await prisma.activity.delete({ where: { id } });
   return true;
+}
+
+export async function restoreActivities(userId: string, input: RestoreActivitiesInput) {
+  return prisma.$transaction(async (tx) => {
+    await tx.activity.deleteMany({ where: { userId } });
+    if (input.activities.length > 0) {
+      await tx.activity.createMany({
+        data: input.activities.map((a) => ({
+          userId,
+          expense: a.expense,
+          amount: a.amount,
+          date: new Date(a.date),
+          description: a.description,
+          category: a.category,
+        })),
+      });
+    }
+    return tx.activity.findMany({
+      where: { userId },
+      orderBy: { date: "desc" },
+      select: {
+        id: true,
+        expense: true,
+        amount: true,
+        date: true,
+        description: true,
+        category: true,
+      },
+    });
+  });
+}
+
+export async function resetAllActivities(userId: string) {
+  await prisma.activity.deleteMany({ where: { userId } });
 }

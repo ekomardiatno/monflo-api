@@ -15,5 +15,10 @@ export const queryActivitiesSchema = z.object({
   year: z.coerce.number().int().min(2000).max(2100).optional(),
 });
 
+export const restoreActivitiesSchema = z.object({
+  activities: z.array(createActivitySchema),
+});
+
 export type CreateActivityInput = z.infer<typeof createActivitySchema>;
 export type UpdateActivityInput = z.infer<typeof updateActivitySchema>;
+export type RestoreActivitiesInput = z.infer<typeof restoreActivitiesSchema>;

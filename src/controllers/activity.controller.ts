@@ -68,3 +68,21 @@ export async function remove(req: Request, res: Response) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export async function restore(req: Request, res: Response) {
+  try {
+    const activities = await activityService.restoreActivities(req.user!.userId, req.body);
+    res.json(activities);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function resetAll(req: Request, res: Response) {
+  try {
+    await activityService.resetAllActivities(req.user!.userId);
+    res.json({ message: "All activities deleted" });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+}
