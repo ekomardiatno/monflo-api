@@ -92,3 +92,73 @@ export async function restoreActivities(userId: string, input: RestoreActivities
 export async function resetAllActivities(userId: string) {
   await prisma.activity.deleteMany({ where: { userId } });
 }
+
+export async function getSummary(userId: string) {
+  const activities = await prisma.activity.findMany({
+    where: { userId },
+    orderBy: { date: "desc" },
+    select: {
+      id: true,
+      expense: true,
+      amount: true,
+      date: true,
+      description: true,
+      category: true,
+    },
+  });
+
+  let balance = 0;
+  let totalIncome = 0;
+  let totalExpense = 0;
+  const monthly: Record<
+    string,
+    {
+      income: number;
+      expense: number;
+      expenseCategories: Record<string, number>;
+      incomeCategories: Record<string, number>;
+    }
+  > = {};
+
+  const now = new Date();
+  const currentMonth = now.getMonth();
+  const currentYear = now.getFullYear();
+  const recentActivities: typeof activities = [];
+
+  for (const a of activities) {
+    const d = new Date(a.date);
+    const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+
+    if (!monthly[monthKey]) {
+      monthly[monthKey] = {
+        income: 0,
+        expense: 0,
+        expenseCategories: {},
+        incomeCategories: {},
+      };
+    }
+
+    const m = monthly[monthKey];
+    if (a.expense) {
+      totalExpense += a.amount;
+      balance -= a.amount;
+      m.expense += a.amount;
+      m.expenseCategories[a.category] = (m.expenseCategories[a.category] || 0) + a.amount;
+    } else {
+      totalIncome += a.amount;
+      balance += a.amount;
+      m.income += a.amount;
+      m.incomeCategories[a.category] = (m.incomeCategories[a.category] || 0) + a.amount;
+    }
+
+    if (
+      d.getMonth() === currentMonth &&
+      d.getFullYear() === currentYear &&
+      recentActivities.length < 5
+    ) {
+      recentActivities.push(a);
+    }
+  }
+
+  return { balance, totalIncome, totalExpense, monthly, recentActivities };
+}
