@@ -78,6 +78,15 @@ export async function restore(req: Request, res: Response) {
   }
 }
 
+export async function getSummary(req: Request, res: Response) {
+  try {
+    const summary = await activityService.getSummary(req.user!.userId);
+    res.json(summary);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
 export async function resetAll(req: Request, res: Response) {
   try {
     await activityService.resetAllActivities(req.user!.userId);

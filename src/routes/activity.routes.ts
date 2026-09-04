@@ -8,6 +8,7 @@ const router = Router();
 
 router.use(authenticate);
 
+router.get("/summary", activityController.getSummary);
 router.get("/", validate(queryActivitiesSchema, "query"), activityController.getAll);
 router.get("/:id", activityController.getOne);
 router.post("/", validate(createActivitySchema), activityController.create);
