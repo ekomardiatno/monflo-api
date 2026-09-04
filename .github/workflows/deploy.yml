@@ -1,66 +1,119 @@
 name: Deploy API
 
 on:
-  push:
-    branches: [main]
+  release:
+    types: [published]
+
+concurrency:
+  group: monflo-api-production
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    name: Deploy
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup SSH key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+      - name: Build Docker image
+        run: docker build -t monflo-api:latest .
 
-      - name: Sync files to VPS
-        run: |
-          rsync -avz --delete \
-            --exclude='.git' \
-            --exclude='node_modules' \
-            --exclude='dist' \
-            --exclude='.env' \
-            -e "ssh -i ~/.ssh/deploy_key" \
-            ./ ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/monflo-api/
+      - name: Save Docker image
+        run: docker save monflo-api:latest | gzip > /tmp/monflo-api.tar.gz
 
-      - name: Create .env and deploy
-        run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'DEPLOY_SCRIPT'
-            cd ~/monflo-api
+      - name: Upload image to VPS
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          source: /tmp/monflo-api.tar.gz
+          target: /tmp
+          strip_components: 1
 
-            cat > .env << EOF
-            DATABASE_URL=${{ secrets.DATABASE_URL }}
-            JWT_SECRET=${{ secrets.JWT_SECRET }}
-            JWT_REFRESH_SECRET=${{ secrets.JWT_REFRESH_SECRET }}
-            JWT_EXPIRES_IN=${{ vars.JWT_EXPIRES_IN }}
-            JWT_REFRESH_EXPIRES_IN=${{ vars.JWT_REFRESH_EXPIRES_IN }}
-            PORT=${{ vars.PORT }}
-            GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
-            SMTP_HOST=${{ vars.SMTP_HOST }}
-            SMTP_PORT=${{ vars.SMTP_PORT }}
-            SMTP_USER=${{ secrets.SMTP_USER }}
-            SMTP_PASS=${{ secrets.SMTP_PASS }}
-            SMTP_FROM=${{ vars.SMTP_FROM }}
-            FRONTEND_URL=${{ vars.FRONTEND_URL }}
-          EOF
+      - name: Prepare .env file
+        uses: appleboy/ssh-action@v1
+        env:
+          DEPLOY_DIR: /home/ekomardiatno/monflo-api
+          ENV_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ENV_JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          ENV_JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
+          ENV_JWT_EXPIRES_IN: ${{ vars.JWT_EXPIRES_IN }}
+          ENV_JWT_REFRESH_EXPIRES_IN: ${{ vars.JWT_REFRESH_EXPIRES_IN }}
+          ENV_PORT: ${{ vars.PORT }}
+          ENV_GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          ENV_SMTP_HOST: ${{ vars.SMTP_HOST }}
+          ENV_SMTP_PORT: ${{ vars.SMTP_PORT }}
+          ENV_SMTP_USER: ${{ secrets.SMTP_USER }}
+          ENV_SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          ENV_SMTP_FROM: ${{ vars.SMTP_FROM }}
+          ENV_FRONTEND_URL: ${{ vars.FRONTEND_URL }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          envs: DEPLOY_DIR,ENV_DATABASE_URL,ENV_JWT_SECRET,ENV_JWT_REFRESH_SECRET,ENV_JWT_EXPIRES_IN,ENV_JWT_REFRESH_EXPIRES_IN,ENV_PORT,ENV_GOOGLE_CLIENT_ID,ENV_SMTP_HOST,ENV_SMTP_PORT,ENV_SMTP_USER,ENV_SMTP_PASS,ENV_SMTP_FROM,ENV_FRONTEND_URL
+          script: |
+            set -e
+            mkdir -p "$DEPLOY_DIR"
+            cat > "$DEPLOY_DIR/.env" <<EOF
+            DATABASE_URL=${ENV_DATABASE_URL}
+            JWT_SECRET=${ENV_JWT_SECRET}
+            JWT_REFRESH_SECRET=${ENV_JWT_REFRESH_SECRET}
+            JWT_EXPIRES_IN=${ENV_JWT_EXPIRES_IN:-7d}
+            JWT_REFRESH_EXPIRES_IN=${ENV_JWT_REFRESH_EXPIRES_IN:-15d}
+            PORT=${ENV_PORT:-5055}
+            GOOGLE_CLIENT_ID=${ENV_GOOGLE_CLIENT_ID}
+            SMTP_HOST=${ENV_SMTP_HOST:-smtp.gmail.com}
+            SMTP_PORT=${ENV_SMTP_PORT:-587}
+            SMTP_USER=${ENV_SMTP_USER}
+            SMTP_PASS=${ENV_SMTP_PASS}
+            SMTP_FROM=${ENV_SMTP_FROM}
+            FRONTEND_URL=${ENV_FRONTEND_URL}
+            EOF
+            chmod 600 "$DEPLOY_DIR/.env"
 
-            docker build -t monflo-api .
+      - name: Load image and start container
+        uses: appleboy/ssh-action@v1
+        env:
+          DEPLOY_DIR: /home/ekomardiatno/monflo-api
+          ENV_PORT: ${{ vars.PORT }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          envs: DEPLOY_DIR,ENV_PORT
+          command_timeout: 5m
+          script: |
+            set -e
+            echo "==> Loading Docker image..."
+            docker load < /tmp/monflo-api.tar.gz
+            rm -f /tmp/monflo-api.tar.gz
 
+            echo "==> Stopping old container..."
             docker stop monflo-api 2>/dev/null || true
             docker rm monflo-api 2>/dev/null || true
 
+            echo "==> Starting new container..."
             docker run -d \
               --name monflo-api \
               --network host \
               --restart unless-stopped \
-              --env-file .env \
-              monflo-api
+              --env-file "$DEPLOY_DIR/.env" \
+              monflo-api:latest
 
-            docker image prune -f
-          DEPLOY_SCRIPT
+            echo "==> Waiting for health check..."
+            PORT="${ENV_PORT:-5055}"
+            for i in $(seq 1 30); do
+              if curl -sf "http://localhost:${PORT}/health" > /dev/null 2>&1; then
+                echo "==> Health check passed!"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "==> Health check FAILED"
+            docker logs --tail 50 monflo-api
+            exit 1
